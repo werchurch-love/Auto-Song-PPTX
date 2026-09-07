@@ -8,6 +8,7 @@ Option Explicit
 '   [Song Name One]
 '   60pt
 '   purple
+'   center
 '
 '   =V1=
 '   ...lyrics...
@@ -24,10 +25,25 @@ Option Explicit
 '   ...lyrics...
 '
 ' Rules:
-'   - Each song name is wrapped in [ ] and MUST be on its own line.
+'   - Each song name is wrapped in [ ] or 【 】 and MUST be on its own line.
+'     [FIXED - v3] Title recognition AND title extraction now share ONE
+'     single function (ExtractBracketTitle) so they can never drift out
+'     of sync again. A marker is valid as soon as the opening bracket
+'     ("[" or "【") has a matching closing bracket ("]" or "】"
+'     respectively) somewhere later on the SAME line, with non-empty
+'     text in between. Anything AFTER that closing bracket - including
+'     a DIFFERENT bracket type used as a trailing language tag - is
+'     ignored and does NOT affect recognition or the extracted title.
+'       [神大愛][粵語]         -> title = 神大愛
+'       【讚美之泉】[國語]      -> title = 讚美之泉
+'       【我用信心抬起頭】[粵語] -> title = 我用信心抬起頭
 '   - The line right after the song name may be the font size (e.g. "60pt" or "60").
 '   - The line after that may be the font color (named color, #RRGGBB hex, or r,g,b).
-'     If either the size or the color is omitted, defaults are used (42pt / black).
+'   - [ADDED] The line after the color may be the text alignment:
+'     left, center, right, or justify. This line is OPTIONAL - if it
+'     is missing (or not recognized), alignment defaults to left.
+'     If either the size, the color, or the alignment is omitted,
+'     defaults are used (42pt / black / left).
 '   - Section markers like =V1= =C1= =BRIDGE= start a slide and create a navigation button.
 '   - A line containing only == starts a new slide without creating a button on bottom-right.
 '   - Background image for a song is named exactly like the song, e.g. "[Song]"
@@ -56,6 +72,8 @@ Const ppMouseClick = 1
 Const ppActionHyperlink = 7
 Const ppAlignCenter = 2
 Const ppAlignLeft = 1
+Const ppAlignRight = 3
+Const ppAlignJustify = 4
 Const ppVerticalAnchorTop = 1
 Const ppVerticalAnchorMiddle = 3
 Const ppAutoSizeNone = 0
@@ -66,7 +84,7 @@ Const SLIDE_W = 960
 Const SLIDE_H = 540
 Const CM_TO_POINTS = 28.3464567
 Const LYRIC_BOTTOM_GAP = 65
-Const BACKGROUND_TRANSPARENCY = 0.25
+Const BACKGROUND_TRANSPARENCY = 0.33
 Const DEFAULT_FONT_SIZE = 42
 Const DEFAULT_COLOR = 0 ' black
 
@@ -86,7 +104,7 @@ Dim fso, scriptFolder, lyricsPath, pptApp
 Dim textMargin
 Dim g_slideLabels(), g_slideTexts(), g_slideCount
 Dim g_buttonLabels(), g_buttonTargets(), g_buttonCount
-Dim g_fontSize, g_fontColor
+Dim g_fontSize, g_fontColor, g_fontAlign
 Dim g_compressNote, g_cpicWarned
 Dim g_defaultBgSuffix
 
@@ -152,7 +170,7 @@ Sub Main()
     For i = 0 To blockCount - 1
         block = blocks(i)
         title = SongTitleFromBlock(block)
-        ParseSongBlock block   ' sets g_slideCount, g_slideLabels, g_slideTexts, g_buttonCount, g_buttonLabels, g_buttonTargets, g_fontSize, g_fontColor
+        ParseSongBlock block   ' sets g_slideCount, g_slideLabels, g_slideTexts, g_buttonCount, g_buttonLabels, g_buttonTargets, g_fontSize, g_fontColor, g_fontAlign
 
         If g_slideCount = 0 Then
             MsgBox ChrW(&H9019) & ChrW(&H9996) & ChrW(&H6B4C) & ChrW(&H6C92) & ChrW(&H6709) & ChrW(&H6BB5) & ChrW(&H843D) & ChrW(&HFF08) & ChrW(&H627E) & ChrW(&H4E0D) & ChrW(&H5230) & " =V1= " & ChrW(&H7B49) & ChrW(&H6A19) & ChrW(&H8A18) & _
@@ -172,7 +190,7 @@ Sub Main()
         On Error GoTo 0
     End If
     Set pptApp = Nothing
-    
+
     If g_compressNote <> "" Then
         g_compressNote = vbCrLf & vbCrLf & ChrW(&H5716) & ChrW(&H7247) & _
             ChrW(&H58D3) & ChrW(&H7E7C) & ChrW(&HFF1A) & g_compressNote
@@ -224,18 +242,61 @@ Sub SplitIntoSongs(ByVal raw, ByRef blocks, ByRef blockCount)
     End If
 End Sub
 
-' ---------------------------------------------------------------
-' Get the song title from a block (the [ ... ] line).
-' ---------------------------------------------------------------
+' =====================================================================
+' [FIXED - v3] Single source of truth for bracket-title parsing.
+' Both IsSongMarker (validation) and SongTitleFromBlock (extraction)
+' call THIS function, so they can never disagree with each other again.
+'
+' Returns the text between the FIRST matching bracket pair, or ""
+' if the line does not start with "[" / "【", or has no matching
+' closing bracket, or the text between the brackets is empty.
+' Anything AFTER the closing bracket on the same line (e.g. a
+' trailing "[粵語]" / "[國語]" language tag, even using the OTHER
+' bracket type) is simply ignored.
+' =====================================================================
+Function ExtractBracketTitle(ByVal value)
+    Dim closeCh, openLen, closePos, inner
+    ExtractBracketTitle = ""
+
+    value = Trim(RemoveInvisibleChars(value))
+    If Len(value) < 3 Then Exit Function
+
+    If Left(value, 1) = "[" Then
+        closeCh = "]"
+        openLen = 1
+    ElseIf Left(value, 1) = ChrW(&H3010) Then
+        closeCh = ChrW(&H3011)
+        openLen = 1
+    Else
+        Exit Function
+    End If
+
+    closePos = InStr(1 + openLen, value, closeCh)
+    If closePos = 0 Then Exit Function
+
+    inner = Trim(Mid(value, 1 + openLen, closePos - 1 - openLen))
+    If inner = "" Then Exit Function
+
+    ExtractBracketTitle = inner
+End Function
+
+' A line is a valid song marker if a bracket title can be extracted from it.
+Function IsSongMarker(ByVal value)
+    IsSongMarker = (ExtractBracketTitle(value) <> "")
+End Function
+
+' Get the song title from a block (the [ ... ] / 【 ... 】 first line).
 Function SongTitleFromBlock(ByVal block)
     Dim lines
     lines = Split(block, vbLf)
-    SongTitleFromBlock = Trim(RemoveInvisibleChars(Mid(lines(0), 2, Len(lines(0)) - 2)))
+    SongTitleFromBlock = ExtractBracketTitle(lines(0))
 End Function
 
 ' ---------------------------------------------------------------
-' Parse one song block: font size, font color, then sections and slides.
-' Fills module-level g_* variables.
+' Parse one song block: font size, font color, [alignment], then
+' sections and slides. Fills module-level g_* variables.
+' Stages: 0 = expect font size, 1 = expect font color,
+'         2 = expect alignment (optional), 3 = reading lyrics.
 ' ---------------------------------------------------------------
 Sub ParseSongBlock(ByVal block)
     Dim lines, line, i, stage, currentLabel, currentText, hasSlideForSection
@@ -243,8 +304,9 @@ Sub ParseSongBlock(ByVal block)
     g_buttonCount = 0
     g_fontSize = DEFAULT_FONT_SIZE
     g_fontColor = DEFAULT_COLOR
+    g_fontAlign = ppAlignLeft
     lines = Split(block, vbLf)
-    stage = 0 ' 0 = expect font size, 1 = expect font color, 2 = lyrics
+    stage = 0
     currentLabel = ""
     currentText = ""
     hasSlideForSection = False
@@ -263,14 +325,14 @@ Sub ParseSongBlock(ByVal block)
                     AddButton currentLabel, g_slideCount
                     currentText = ""
                     hasSlideForSection = False
-                    stage = 2
+                    stage = 3
                 ElseIf IsSlideBreakMarker(line) Then
                     If currentLabel <> "" And (currentText <> "" Or Not hasSlideForSection) Then
                         AddSlide currentLabel, currentText
                         hasSlideForSection = True
                     End If
                     currentText = ""
-                    stage = 2
+                    stage = 3
                 ElseIf IsFontSizeLine(line) Then
                     g_fontSize = ParseFontSize(line)
                     stage = 1
@@ -287,21 +349,46 @@ Sub ParseSongBlock(ByVal block)
                     AddButton currentLabel, g_slideCount
                     currentText = ""
                     hasSlideForSection = False
-                    stage = 2
+                    stage = 3
                 ElseIf IsSlideBreakMarker(line) Then
                     If currentLabel <> "" And (currentText <> "" Or Not hasSlideForSection) Then
                         AddSlide currentLabel, currentText
                         hasSlideForSection = True
                     End If
                     currentText = ""
-                    stage = 2
+                    stage = 3
                 Else
                     g_fontColor = ParseColor(line)
                     stage = 2
                 End If
             End If
+        ElseIf stage = 2 Then
+            ' [ADDED] optional alignment line
+            If line <> "" Then
+                If IsSectionMarker(line) Then
+                    If currentLabel <> "" And (currentText <> "" Or Not hasSlideForSection) Then
+                        AddSlide currentLabel, currentText
+                        hasSlideForSection = True
+                    End If
+                    currentLabel = NormalizeLabel(line)
+                    AddButton currentLabel, g_slideCount
+                    currentText = ""
+                    hasSlideForSection = False
+                    stage = 3
+                ElseIf IsSlideBreakMarker(line) Then
+                    If currentLabel <> "" And (currentText <> "" Or Not hasSlideForSection) Then
+                        AddSlide currentLabel, currentText
+                        hasSlideForSection = True
+                    End If
+                    currentText = ""
+                    stage = 3
+                ElseIf IsAlignmentLine(line) Then
+                    g_fontAlign = ParseAlignment(line)
+                    stage = 3
+                End If
+            End If
         Else
-            ' stage 2: reading lyrics
+            ' stage 3: reading lyrics
             If IsSectionMarker(line) Then
                 If currentLabel <> "" And (currentText <> "" Or Not hasSlideForSection) Then
                     AddSlide currentLabel, currentText
@@ -546,21 +633,6 @@ End Function
 ' ---------------------------------------------------------------
 ' Parsing helpers
 ' ---------------------------------------------------------------
-Function IsSongMarker(ByVal value)
-    IsSongMarker = False
-    value = Trim(RemoveInvisibleChars(value))
-
-    If Len(value) < 3 Then Exit Function
-
-    Dim isEngBracket, isChiBracket
-    isEngBracket = (Left(value, 1) = "[" And Right(value, 1) = "]")
-    isChiBracket = (Left(value, 1) = ChrW(&H3010) And Right(value, 1) = ChrW(&H3011))
-
-    If Not (isEngBracket Or isChiBracket) Then Exit Function
-
-    IsSongMarker = True
-End Function
-
 Function IsSectionMarker(ByVal value)
     Dim inside
     IsSectionMarker = False
@@ -600,6 +672,35 @@ Function ParseFontSize(ByVal value)
 End Function
 
 ' ---------------------------------------------------------------
+' [ADDED] Text alignment parsing.
+' Recognized words (case-insensitive, spaces ignored):
+'   left, center, centre, right, justify, justified
+' Anything else is NOT recognized (IsAlignmentLine returns False),
+' so ParseSongBlock keeps waiting for a real marker instead.
+' ---------------------------------------------------------------
+Function IsAlignmentLine(ByVal value)
+    Dim clean
+    clean = LCase(Replace(Trim(value), " ", ""))
+    Select Case clean
+        Case "left", "center", "centre", "right", "justify", "justified"
+            IsAlignmentLine = True
+        Case Else
+            IsAlignmentLine = False
+    End Select
+End Function
+
+Function ParseAlignment(ByVal value)
+    Dim clean
+    clean = LCase(Replace(Trim(value), " ", ""))
+    Select Case clean
+        Case "center", "centre": ParseAlignment = ppAlignCenter
+        Case "right": ParseAlignment = ppAlignRight
+        Case "justify", "justified": ParseAlignment = ppAlignJustify
+        Case Else: ParseAlignment = ppAlignLeft ' "left" or unrecognized -> left
+    End Select
+End Function
+
+' ---------------------------------------------------------------
 ' Font color parsing: named color, #RRGGBB hex, or r,g,b.
 ' Returns an RGB() value.
 ' ---------------------------------------------------------------
@@ -633,17 +734,17 @@ Function ParseColor(ByVal value)
     End If
 
     ' named colors
-    Select Case LCase(Replace(v, " ", ""))
+    Select Case LCase(Trim(v))
         Case "black": ParseColor = RGB(0, 0, 0)
         Case "white": ParseColor = RGB(255, 255, 255)
         Case "red": ParseColor = RGB(255, 0, 0)
-        Case "darkred": ParseColor = RGB(139, 0, 0)
+        Case "darkred", "dark red": ParseColor = RGB(139, 0, 0)
         Case "crimson": ParseColor = RGB(220, 20, 60)
         Case "green": ParseColor = RGB(0, 128, 0)
         Case "lime": ParseColor = RGB(0, 255, 0)
-        Case "darkgreen": ParseColor = RGB(0, 100, 0)
+        Case "darkgreen", "dark green": ParseColor = RGB(0, 100, 0)
         Case "blue": ParseColor = RGB(0, 0, 255)
-        Case "darkblue": ParseColor = RGB(0, 0, 139)
+        Case "darkblue", "dark blue": ParseColor = RGB(0, 0, 139)
         Case "navy": ParseColor = RGB(0, 0, 128)
         Case "yellow": ParseColor = RGB(255, 255, 0)
         Case "gold": ParseColor = RGB(255, 215, 0)
@@ -653,7 +754,7 @@ Function ParseColor(ByVal value)
         Case "violet": ParseColor = RGB(238, 130, 238)
         Case "magenta": ParseColor = RGB(255, 0, 255)
         Case "pink": ParseColor = RGB(255, 192, 203)
-        Case "hotpink": ParseColor = RGB(255, 105, 180)
+        Case "hotpink", "hot pink": ParseColor = RGB(255, 105, 180)
         Case "cyan": ParseColor = RGB(0, 255, 255)
         Case "teal": ParseColor = RGB(0, 128, 128)
         Case "aqua": ParseColor = RGB(0, 255, 255)
@@ -662,11 +763,11 @@ Function ParseColor(ByVal value)
         Case "olive": ParseColor = RGB(128, 128, 0)
         Case "gray", "grey": ParseColor = RGB(128, 128, 128)
         Case "silver": ParseColor = RGB(192, 192, 192)
-        Case "lightgray", "lightgrey": ParseColor = RGB(211, 211, 211)
-        Case "darkgray", "darkgrey": ParseColor = RGB(64, 64, 64)
+        Case "lightgray", "lightgrey", "light gray", "light grey": ParseColor = RGB(211, 211, 211)
+        Case "darkgray", "darkgrey", "dark gray", "dark grey": ParseColor = RGB(64, 64, 64)
         Case "coral": ParseColor = RGB(255, 127, 80)
         Case "salmon": ParseColor = RGB(250, 128, 114)
-        Case "skyblue": ParseColor = RGB(135, 206, 235)
+        Case "skyblue", "sky blue": ParseColor = RGB(135, 206, 235)
         Case "turquoise": ParseColor = RGB(64, 224, 208)
         Case Else: ParseColor = DEFAULT_COLOR ' unknown -> black
     End Select
@@ -702,9 +803,9 @@ End Function
 ' [ADDED] ReplacePunctuation - lyric lines only.
 ' Every punctuation mark (full-width CJK + half-width ASCII, quotes,
 ' brackets, dashes, ellipsis, arrows, dingbats) becomes TWO spaces.
-' Called from exactly one place: the stage-2 lyric branch of
+' Called from exactly one place: the stage-3 lyric branch of
 ' ParseSongBlock. The song title [ ... ], the =V1= / == markers and
-' the font-size / font-color lines are NOT touched.
+' the font-size / font-color / alignment lines are NOT touched.
 '
 ' Design notes:
 '   * VBScript AscW returns a SIGNED 16-bit Integer, so codepoints
@@ -718,7 +819,6 @@ End Function
 Function ReplacePunctuation(ByVal value)
     Dim i, ch, c, result
     Const REPL = "  "   ' two spaces
-
     value = "" & value
     result = ""
     For i = 1 To Len(value)
@@ -1035,6 +1135,8 @@ End Sub
 
 ' [CHANGED] background + fade overlay moved to the SlideMaster (see
 ' SetupMasterBackground); this sub now only builds the per-slide text.
+' [CHANGED] Uses g_fontAlign (module-level) for lyric text alignment
+' instead of always forcing left.
 Sub CreateLyricSlide(ByVal sld, ByVal title, ByVal label, ByVal lyricText)
     Dim lyricBox, footer, footerText
 
@@ -1059,7 +1161,7 @@ Sub CreateLyricSlide(ByVal sld, ByVal title, ByVal label, ByVal lyricText)
         .Bold = msoTrue
         .Color.RGB = g_fontColor
     End With
-    lyricBox.TextFrame.TextRange.ParagraphFormat.Alignment = ppAlignLeft
+    lyricBox.TextFrame.TextRange.ParagraphFormat.Alignment = g_fontAlign
 
     Set footer = sld.Shapes.AddTextbox(msoTextOrientationHorizontal, textMargin, SLIDE_H - 30, 360, 24)
     footer.TextFrame.AutoSize = ppAutoSizeNone
@@ -1087,6 +1189,7 @@ Sub CreateLyricSlide(ByVal sld, ByVal title, ByVal label, ByVal lyricText)
     footer.TextFrame.TextRange.ParagraphFormat.Alignment = ppAlignLeft
 End Sub
 
+' [CHANGED] gap = 0 removes all spacing between navigation buttons.
 Sub AddNavigationButtons(ByVal sld, ByRef labels, ByRef targets, ByVal count, ByVal activeLabel)
     Dim i, buttonHeight, gap, padH, minButtonWidth, totalWidth, startX, buttonY, currentX
     Dim btns(), btn, targetSubAddress
@@ -1094,7 +1197,7 @@ Sub AddNavigationButtons(ByVal sld, ByRef labels, ByRef targets, ByVal count, By
     If count <= 0 Then Exit Sub
 
     buttonHeight = 28
-    gap = 3
+    gap = 0
     padH = 10
     minButtonWidth = 42
     buttonY = SLIDE_H - 40
@@ -1168,7 +1271,6 @@ Function SafeFileName(ByVal value)
     If value = "" Then value = "Lyrics"
     SafeFileName = value
 End Function
-
 
 ' =====================================================================
 ' [ADDED] Embedded pre-run guard for the lyrics generator.
