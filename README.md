@@ -2,6 +2,7 @@
 
 寫一個純文字檔 `lyrics.txt`，一次過生成**多首**詩歌的 PowerPoint：自動分頁、自動加背景圖、自動在右下角加上段落跳轉按鈕（主歌／副歌一按即跳）。
 
+▶️ **[觀看示範影片](https://youtu.be/irIsSUxqdDs?si=nKD05K_P_RvnZoT5)**
 ---
 
 ## 一、先決條件
