@@ -1,7 +1,5 @@
 # 🎵 Auto-Song-PPTX
 
-##
-
 ### 一鍵製作多張詩歌投影片
 
 在 `lyrics.txt` 寫歌詞，自動產生多首 `.pptx`。  
